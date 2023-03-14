@@ -12,7 +12,7 @@ from sensor_msgs.msg import Image
 from scipy.spatial.transform import Rotation as R
 import cv2
 import tf2_ros
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, Twist
 
 input_shape = (1, 1, 224, 224)
 model_folder = ''
@@ -88,6 +88,10 @@ class DeformationNode(Node):
         # self.segmentation_method = "NN"
         # segmentation_model_path = "/home/mullis/ros2_projects/deformable_ws/src/soft_material_deformation_estimation_ros2/models/segmentation/UNet_resnet18_1e-05_0.pth"
 
+        self.gains = np.array([1, 1, 1, 1])
+        self.dead_band = np.array([0.03, 0.03, 0.03, np.deg2rad(3)])
+        self.deformation_setpoint = np.array([0, 1.1, 0, 0])
+
         device_config = pykinect.default_configuration
         device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_720P
         device_config.color_format = pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32
@@ -96,7 +100,7 @@ class DeformationNode(Node):
         device_config.synchronized_images_only = True
         pykinect.initialize_libraries(track_body=self.segmentation_method == 'skeletal tracker')
 
-        self.publish_rviz = True
+        self.publish_rviz = False
         self.publish_hands_pos = True
 
         if self.segmentation_method == 'skeletal tracker':
@@ -150,11 +154,17 @@ class DeformationNode(Node):
         self.deformation_publisher = self.create_publisher(topic='/deformation_estimation',
                                                            msg_type=WrenchStamped,
                                                            qos_profile=10)
+        self.twist_publisher = self.create_publisher(topic='/twist_cmd',
+                                                           msg_type=Twist,
+                                                           qos_profile=10)
 
         self.deformation_buffer = []
         self.filter_length = 1
         self.resolution = (224, 224)
         self.depth_resolution = (512, 512)
+
+        self.deformation_msg = WrenchStamped()
+        self.twist_msg = Twist()
 
     def get_segmented_depth(self):
         capture = self.azure.update()
@@ -309,39 +319,59 @@ class DeformationNode(Node):
 
         segmented_depth = self.get_segmented_depth()
 
-        depth = torch.from_numpy(segmented_depth.reshape(input_shape)).float().to('cuda') / 1000
-        with torch.no_grad():
-            self.deformation_buffer.append(self.deformation_estimator(depth).squeeze().cpu().detach().numpy())
+        if np.sum(segmented_depth) > 0:
 
-        if len(self.deformation_buffer) > self.filter_length:
-            self.deformation_buffer.pop(0)
+            depth = torch.from_numpy(segmented_depth.reshape(input_shape)).float().to('cuda') / 1000
+            with torch.no_grad():
+                deformationm_estimation = self.deformation_estimator(depth).squeeze().cpu().detach().numpy()
+            #     self.deformation_buffer.append(self.deformation_estimator(depth).squeeze().cpu().detach().numpy())
+            #
+            # if len(self.deformation_buffer) > self.filter_length:
+            #     self.deformation_buffer.pop(0)
 
-        # deformation_estimation = np.mean(deformation_buffer, axis=1)
-        deformation_estimation = self.deformation_buffer[-1] * self.half_range_def + self.mid_def
+            # deformation_estimation = np.mean(deformation_buffer, axis=1)
+            # deformation_estimation = self.deformation_buffer[-1] * self.half_range_def + self.mid_def
+            deformation_estimation = deformationm_estimation * self.half_range_def + self.mid_def
 
-        deformation_msg = WrenchStamped()
-        deformation_msg.header.stamp = self.get_clock().now().to_msg()
+            self.deformation_msg.header.stamp = self.get_clock().now().to_msg()
 
-        if self.dofs == 3:
-            deformation_msg.wrench.force.x = deformation_estimation[0]
-            deformation_msg.wrench.force.y = deformation_estimation[1]
-            deformation_msg.wrench.force.z = deformation_estimation[2]
-        elif self.dofs == 4:
-            deformation_msg.wrench.force.x = deformation_estimation[0]
-            deformation_msg.wrench.force.y = deformation_estimation[1]
-            deformation_msg.wrench.force.z = deformation_estimation[2]
-            deformation_msg.wrench.torque.z = deformation_estimation[3]
-        elif self.dofs == 5:
-            deformation_msg.wrench.force.x = deformation_estimation[0]
-            deformation_msg.wrench.force.y = deformation_estimation[1]
-            deformation_msg.wrench.force.z = deformation_estimation[2]
-            deformation_msg.wrench.torque.y = deformation_estimation[3]
-            deformation_msg.wrench.torque.z = deformation_estimation[4]
+            if self.dofs == 3:
+                self.deformation_msg.wrench.force.x = deformation_estimation[0]
+                self.deformation_msg.wrench.force.y = deformation_estimation[1]
+                self.deformation_msg.wrench.force.z = deformation_estimation[2]
+            elif self.dofs == 4:
+                self.deformation_msg.wrench.force.x = deformation_estimation[0]
+                self.deformation_msg.wrench.force.y = deformation_estimation[1]
+                self.deformation_msg.wrench.force.z = deformation_estimation[2]
+                self.deformation_msg.wrench.torque.z = deformation_estimation[3]
+            elif self.dofs == 5:
+                self.deformation_msg.wrench.force.x = deformation_estimation[0]
+                self.deformation_msg.wrench.force.y = deformation_estimation[1]
+                self.deformation_msg.wrench.force.z = deformation_estimation[2]
+                self.deformation_msg.wrench.torque.y = deformation_estimation[3]
+                self.deformation_msg.wrench.torque.z = deformation_estimation[4]
+            else:
+                print('Unsupported number of deformation degreeS of freedom')
+                exit()
+
+            self.deformation_publisher.publish(self.deformation_msg)
+
+            delta_def = deformation_estimation - self.deformation_setpoint
+            delta_def *= np.abs(delta_def) > self.dead_band
+
+            twist = delta_def* self.gains
+            self.twist_msg.linear.x = twist[0]
+            self.twist_msg.linear.y = twist[1]
+            self.twist_msg.linear.z = twist[2]
+            self.twist_msg.angular.z = twist[3]
+
         else:
-            print('Unsupported number of deformation degreeS of freedom')
-            exit()
+            self.twist_msg.linear.x = 0.0
+            self.twist_msg.linear.y = 0.0
+            self.twist_msg.linear.z = 0.0
+            self.twist_msg.angular.z = 0.0
 
-        self.deformation_publisher.publish(deformation_msg)
+        self.twist_publisher.publish(self.twist_msg)
 
 
 def main():
