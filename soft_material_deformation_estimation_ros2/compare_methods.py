@@ -1,8 +1,11 @@
+import time
+
 import numpy as np
 import torch
 from geometry_msgs.msg import WrenchStamped
 import rclpy
 from rclpy.node import Node
+from rclpy.time import Duration
 
 import pyKinectAzure.pykinect_azure as pykinect
 from pyKinectAzure.pykinect_azure.k4abt.body import Body
@@ -14,6 +17,7 @@ import cv2
 import tf2_ros
 from geometry_msgs.msg import TransformStamped, Twist
 from std_srvs.srv import Trigger
+import json
 
 input_shape = (1, 1, 224, 224)
 model_folder = ''
@@ -56,24 +60,17 @@ class DeformationNode(Node):
 
         self.logger = self.get_logger()
 
-        self.declare_parameter('dofs')
-        self.declare_parameter('half_range_def')
-        self.declare_parameter('mid_def')
-        self.declare_parameter('segmentation_method')
-        self.declare_parameter('segmentation_model_path')
-        self.declare_parameter('deformation_model_path')
+        self.dofs = 4
+        self.half_range_def = [0.12, 0.365, 0.12, 0.4188790204786391]
+        self.mid_def = [0.0, 0.905, 0.0, 0.0]
 
-        self.dofs = self.get_parameter('dofs').value
-        self.half_range_def = self.get_parameter('half_range_def').value
-        self.mid_def = self.get_parameter('mid_def').value
-
-        self.segmentation_method = self.get_parameter('segmentation_method').value
+        self.segmentation_method = 'skeletal tracker'
         if self.segmentation_method == 'NN':
-            segmentation_model_path = self.get_parameter('segmentation_model_path').value
+            segmentation_model_path = '/home/tartaglia/ros2_projects/deformable_ws/src/soft_material_deformation_estimation_ros2/models/segmentation/UNet_resnet18_1e-05_0.pth'
         else:
             segmentation_model_path = None
 
-        deformation_model_path = self.get_parameter('deformation_model_path').value
+        deformation_model_path = "/home/tartaglia/ros2_projects/deformable_ws/src/soft_material_deformation_estimation_ros2/models/regression/Densenet121_0.0001_1.pth"
 
         self.logger.info(f'{self.dofs}')
         self.logger.info(f'{self.half_range_def}')
@@ -82,16 +79,9 @@ class DeformationNode(Node):
         self.logger.info(f'{segmentation_model_path}')
         self.logger.info(f'{deformation_model_path}')
 
-        # deformation_model_path = "/home/mullis/drapebot_dataset/m28_demonstration/F20/models/regression/Densenet121_0.0001_1/epoch39.pth"
-        # self.dofs = 4
-        # self.half_range_def = [0.12, 0.365, 0.12, 0.4188790204786391]
-        # self.mid_def = [0.0, 0.905, 0.0, 0.0]
-        # self.segmentation_method = "NN"
-        # segmentation_model_path = "/home/mullis/ros2_projects/deformable_ws/src/soft_material_deformation_estimation_ros2/models/segmentation/UNet_resnet18_1e-05_0.pth"
-
-        self.gains = np.array([1.4, 1.4, 1.4, 1.2])
+        self.gains = np.array([1.0, 0.4, 0.4, 0.4])
         # self.dead_band = np.array([0.03, 0.03, 0.03, np.deg2rad(3)])
-        self.dead_band = np.array([0.03, 0.03, 0.03, np.deg2rad(3)])
+        self.dead_band = np.array([0, 0, 0, 0])
         self.deformation_setpoint = np.array([0, 1.0, 0, 0])
 
         self.T_EndEffector_DepthLink = np.eye(4)
@@ -108,9 +98,9 @@ class DeformationNode(Node):
         device_config.synchronized_images_only = False
         pykinect.initialize_libraries(track_body=self.segmentation_method == 'skeletal tracker')
 
-        self.publish_depth = True
+        self.publish_rviz = False
         self.publish_hands_pos = True
-        self.estimate_from_ply = True
+        self.estimate_from_ply = False
 
         self.azure = pykinect.start_device(config=device_config)
 
@@ -144,10 +134,9 @@ class DeformationNode(Node):
                             self.crop_size[1][0]: self.crop_size[1][1]]
 
         # self.calibration = self.azure.get_calibration(device_config.depth_mode, device_config.color_resolution)
-        if self.publish_depth:
+        if self.publish_rviz:
             self.br = CvBridge()
-            self.segmented_depth_pub = self.create_publisher(topic='/segmented_depth', msg_type=Image, qos_profile=10)
-            self.raw_depth = self.create_publisher(topic='/raw_depth', msg_type=Image, qos_profile=10)
+            self.img_pub_rviz = self.create_publisher(topic='/preprocessed_image_rviz', msg_type=Image, qos_profile=10)
 
         self.tf_pub = tf2_ros.TransformBroadcaster(self)
         self.tf_buffer = tf2_ros.Buffer()
@@ -158,19 +147,17 @@ class DeformationNode(Node):
         self.deformation_publisher = self.create_publisher(topic='/deformation_estimation',
                                                            msg_type=WrenchStamped,
                                                            qos_profile=10)
-        self.twist_publisher = self.create_publisher(topic='/imm/commands',
-                                                     msg_type=Twist,
-                                                     qos_profile=10)
 
-        self.next_pose_client = self.create_client(Trigger,'/next_pose',)
+        self.next_pose_client = self.create_client(Trigger, '/next_pose', )
 
         self.deformation_buffer = []
         self.filter_length = 1
         self.resolution = (224, 224)
         self.depth_resolution = (512, 512)
-
         self.deformation_msg = WrenchStamped()
-        self.twist_msg = Twist()
+
+        self.n = 0
+        self.max_samples = 10
 
     def get_segmented_depth(self):
         capture = self.azure.update()
@@ -186,12 +173,6 @@ class DeformationNode(Node):
     def segment_depth(self, depth, color_img=None):
 
         depth = depth[self.crop_size[0][0]: self.crop_size[0][1], self.crop_size[1][0]: self.crop_size[1][1]]
-
-        if self.publish_depth:
-            img_msg: Image = self.br.cv2_to_imgmsg((depth).astype(np.uint16))
-            img_msg.header.stamp = self.get_clock().now().to_msg()
-            self.raw_depth.publish(img_msg)
-
         depth *= depth < self.depth_threshold
         depth = depth * self.static_mask
         depth *= depth < self.depth_matrix
@@ -212,10 +193,10 @@ class DeformationNode(Node):
                 mask = torch.round(self.nn_segmentor(tensor_depth).squeeze()).detach().to('cpu').numpy()
                 depth *= mask
 
-        if self.publish_depth:
-            img_msg: Image = self.br.cv2_to_imgmsg((depth * 100).astype(np.uint16))
+        if self.publish_rviz:
+            img_msg: Image = self.br.cv2_to_imgmsg((mask_0 * 100).astype(np.uint16))
             img_msg.header.stamp = self.get_clock().now().to_msg()
-            self.segmented_depth_pub.publish(img_msg)
+            self.img_pub_rviz.publish(img_msg)
 
         return depth
 
@@ -329,7 +310,6 @@ class DeformationNode(Node):
 
             deformation = np.array([T_CenterGrasp[0, 3], T_CenterGrasp[1, 3], T_CenterGrasp[2, 3],
                                     np.arctan2(T_right_hand[1] - T_left_hand[1], T_right_hand[0] - T_left_hand[0])[0]])
-
         return deformation, True
 
     def estimate_deformation(self):
@@ -351,17 +331,9 @@ class DeformationNode(Node):
             body_frame = self.bodyTracker.update()
             _, human_depth_image = body_frame.get_body_index_map_image()
 
-            self.logger.info('body_frame')
-
             deformation, status = self.compute_and_publish_hand_pos(body_frame=body_frame)
-            
+
             if status:
-                self.deformation_buffer.append(deformation)
-                if len(self.deformation_buffer) > 3:
-                    self.deformation_buffer.pop(0)
-                    deformation = np.mean(self.deformation_buffer)
-                else:
-                    deformation = np.zeros(4)
                 deformation_estimation = deformation
             else:
                 deformation_estimation = np.zeros(4)
@@ -389,45 +361,39 @@ class DeformationNode(Node):
 
         self.deformation_publisher.publish(self.deformation_msg)
 
-        if all(deformation_estimation != np.zeros(4)):
-            delta_def = deformation_estimation - self.deformation_setpoint
-            #delta_def *= np.abs(delta_def) > self.dead_band
-            for i in range(4):
-                if delta_def[i] > self.dead_band[i]:
-                    delta_def[i] -= self.dead_band[i]
-                elif delta_def[i] < -self.dead_band[i]:
-                    delta_def[i] += self.dead_band[i]
-                else:
-                    delta_def[i] = 0
+        self.n += 1
+        self.deformation_buffer.append(deformation_estimation.tolist())
 
-            twist = delta_def * self.gains
-            self.twist_msg.linear.x = twist[0]
-            self.twist_msg.linear.y = twist[1]
-            self.twist_msg.linear.z = twist[2]
-            self.twist_msg.angular.z = twist[3]
+        if self.n >= self.max_samples:
+            self.n = 0
+            self.future = self.next_pose_client.call_async(Trigger.Request())
+            rclpy.spin_until_future_complete(self, self.future)
+            status = self.future.result()
+            return status.success
         else:
-            self.twist_msg.linear.x = 0.0
-            self.twist_msg.linear.y = 0.0
-            self.twist_msg.linear.z = 0.0
-            self.twist_msg.angular.z = 0.0
-
-        self.twist_publisher.publish(self.twist_msg)
-
-
+            return True
 
 
 def main():
     rclpy.init()
     node = DeformationNode()
-    node.create_timer(timer_period_sec=1 / 30, callback=node.estimate_deformation)
+    # node.create_timer(timer_period_sec=1 / 30, callback=node.estimate_deformation)
 
-    rclpy.spin(node)
-    # executor = rclpy.executors.MultiThreadedExecutor()
-    # executor.add_node(node)
-    # executor.spin()
+    executor = rclpy.executors.MultiThreadedExecutor()
+    executor.add_node(node)
+
+    while rclpy.ok():
+        status = node.estimate_deformation()
+        time.sleep(0.1)
+        if not status:
+            break
+
+    with open('/home/tartaglia/Desktop/roman2023.json', mode='w') as file:
+        json.dump(node.deformation_buffer, file, indent=2)
 
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
