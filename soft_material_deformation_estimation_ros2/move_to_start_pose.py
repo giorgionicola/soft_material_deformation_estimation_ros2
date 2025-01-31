@@ -16,7 +16,7 @@ tag20 right hand
 class MoveToStartNode(Node):
     def __init__(self):
 
-        super().__init__('move_tos_start')
+        super().__init__('move_to_start')
 
         self.first_time = True
         self.logger = self.get_logger()
