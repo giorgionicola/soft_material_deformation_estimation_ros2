@@ -3,17 +3,14 @@ import torch
 from geometry_msgs.msg import WrenchStamped
 import rclpy
 from rclpy.node import Node
-
-import pyKinectAzure.pykinect_azure as pykinect
-from pyKinectAzure.pykinect_azure.k4abt.body import Body
-from pyKinectAzure.pykinect_azure.k4abt._k4abtTypes import k4abt_body_t
+import pykinect_azure as pykinect
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
-from scipy.spatial.transform import Rotation as R
 import cv2
-import tf2_ros
-from geometry_msgs.msg import TransformStamped, Twist
+from geometry_msgs.msg import Twist
 from std_srvs.srv import Trigger
+from std_msgs.msg import Float32MultiArray, Int32MultiArray, MultiArrayDimension
+import siamese_models
 
 input_shape = (1, 1, 224, 224)
 model_folder = ''
@@ -48,57 +45,25 @@ def make_mask(crop_size) -> np.ndarray:
 
 
 class DeformationNode(Node):
-    segmentation_methods = ['NN', 'skeletal tracker', 'None']
 
     def __init__(self):
 
         super().__init__('deformation_estimation')
 
+        self.segmentation_threshold = 0.5
+        self.publish_classes = True
+        self.publish_probabilities = True
+        self.publish_raw_depth = True
+        self.publish_rest_ply_shape = True
+        self.publish_depth = True
+
         self.logger = self.get_logger()
 
-        self.declare_parameter('dofs')
-        self.declare_parameter('half_range_def')
-        self.declare_parameter('mid_def')
-        self.declare_parameter('segmentation_method')
-        self.declare_parameter('segmentation_model_path')
-        self.declare_parameter('deformation_model_path')
+        segmentation_model_path = '/home/kildall/ros2_projects/deformable_ws/src/soft_material_deformation_estimation_ros2/models/segmentation/best_model.pth'
+        deformation_model_path = '/home/kildall/ros2_projects/deformable_ws/src/soft_material_deformation_estimation_ros2/models/deformation_estimation/epoch52.pth'
 
-        self.dofs = self.get_parameter('dofs').value
-        self.half_range_def = self.get_parameter('half_range_def').value
-        self.mid_def = self.get_parameter('mid_def').value
-
-        self.segmentation_method = self.get_parameter('segmentation_method').value
-        if self.segmentation_method == 'NN':
-            segmentation_model_path = self.get_parameter('segmentation_model_path').value
-        else:
-            segmentation_model_path = None
-
-        deformation_model_path = self.get_parameter('deformation_model_path').value
-
-        self.logger.info(f'{self.dofs}')
-        self.logger.info(f'{self.half_range_def}')
-        self.logger.info(f'{self.mid_def}')
-        self.logger.info(f'{self.segmentation_method}')
         self.logger.info(f'{segmentation_model_path}')
         self.logger.info(f'{deformation_model_path}')
-
-        # deformation_model_path = "/home/mullis/drapebot_dataset/m28_demonstration/F20/models/regression/Densenet121_0.0001_1/epoch39.pth"
-        # self.dofs = 4
-        # self.half_range_def = [0.12, 0.365, 0.12, 0.4188790204786391]
-        # self.mid_def = [0.0, 0.905, 0.0, 0.0]
-        # self.segmentation_method = "NN"
-        # segmentation_model_path = "/home/mullis/ros2_projects/deformable_ws/src/soft_material_deformation_estimation_ros2/models/segmentation/UNet_resnet18_1e-05_0.pth"
-
-        self.gains = np.array([1.4, 1.4, 1.4, 1.2])
-        # self.dead_band = np.array([0.03, 0.03, 0.03, np.deg2rad(3)])
-        self.dead_band = np.array([0.03, 0.03, 0.03, np.deg2rad(3)])
-        self.deformation_setpoint = np.array([0, 1.0, 0, 0])
-
-        self.T_EndEffector_DepthLink = np.eye(4)
-        self.T_EndEffector_DepthLink[:3, 3] = [0.000, 0.311, -0.708]
-        self.T_EndEffector_DepthLink[:3, :3] = R.from_euler(seq='xyz',
-                                                            angles=[39.000, 0.000, 180],
-                                                            degrees=True).as_matrix()
 
         device_config = pykinect.default_configuration
         device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_720P
@@ -106,27 +71,13 @@ class DeformationNode(Node):
         device_config.depth_mode = pykinect.K4A_DEPTH_MODE_WFOV_2X2BINNED
         device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
         device_config.synchronized_images_only = False
-        pykinect.initialize_libraries(track_body=self.segmentation_method == 'skeletal tracker')
-
-        self.publish_depth = True
-        self.publish_hands_pos = True
-        self.estimate_from_ply = True
+        pykinect.initialize_libraries(track_body=False)
 
         self.azure = pykinect.start_device(config=device_config)
 
-        if self.segmentation_method == 'skeletal tracker':
-            self.apriltag_segmentor = None
-            self.bodyTracker = pykinect.start_body_tracker()
-            self.nn_segmentor = None
-        elif self.segmentation_method == 'NN':
-            self.apriltag_segmentor = None
-            self.bodyTracker = None
-            self.nn_segmentor = torch.load(segmentation_model_path)
-            self.nn_segmentor.eval()
-            self.device = 'cuda'
-        else:
-            print(f'Unknown segmentation method: {self.segmentation_method}')
-            print(f'Avalaible segmentation methods: {self.segmentation_methods}')
+        self.nn_segmentor = torch.load(segmentation_model_path)
+        self.nn_segmentor.eval()
+        self.device = 'cuda'
 
         # Start device
         # Start body tracker
@@ -146,14 +97,25 @@ class DeformationNode(Node):
         # self.calibration = self.azure.get_calibration(device_config.depth_mode, device_config.color_resolution)
         if self.publish_depth:
             self.br = CvBridge()
-            self.segmented_depth_pub = self.create_publisher(topic='/segmented_depth', msg_type=Image, qos_profile=10)
-            self.raw_depth = self.create_publisher(topic='/raw_depth', msg_type=Image, qos_profile=10)
+            self.segmented_depth_pub = self.create_publisher(topic='/segmented_depth',
+                                                             msg_type=Image,
+                                                             qos_profile=10)
+            self.raw_depth_pub = self.create_publisher(topic='/raw_depth',
+                                                       msg_type=Image,
+                                                       qos_profile=10)
 
-        self.tf_pub = tf2_ros.TransformBroadcaster(self)
-        self.tf_buffer = tf2_ros.Buffer()
-        self.listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        if self.publish_probabilities:
+            self.prob_def_pub = self.create_publisher(topic='/deformation_probabilities',
+                                                     msg_type=Float32MultiArray,
+                                                     qos_profile=10)
 
-        self.deformation_estimator = torch.load(deformation_model_path)
+        if self.publish_classes:
+            self.classes_def_pub = self.create_publisher(topic='/deformation_classes',
+                                                      msg_type=Int32MultiArray,
+                                                      qos_profile=10)
+
+
+        self.deformation_estimator: siamese_models.SiameseMultiHeadNetwork = torch.load(deformation_model_path)
 
         self.deformation_publisher = self.create_publisher(topic='/deformation_estimation',
                                                            msg_type=WrenchStamped,
@@ -162,258 +124,84 @@ class DeformationNode(Node):
                                                      msg_type=Twist,
                                                      qos_profile=10)
 
-        self.next_pose_client = self.create_client(Trigger,'/next_pose',)
+        self.ply_rest_shape_client = self.create_service(srv_type=Trigger, srv_name='get_rest_ply_shape', callback=self.get_rest_ply_shape)
 
-        self.deformation_buffer = []
+        self.rest_ply_shape = torch.zeros(input_shape, dtype=torch.float, device=self.device)
+        self.rest_ply_shape_features = None
+
+
         self.filter_length = 1
         self.resolution = (224, 224)
         self.depth_resolution = (512, 512)
 
-        self.deformation_msg = WrenchStamped()
-        self.twist_msg = Twist()
 
+    @torch.no_grad()
     def get_segmented_depth(self):
         capture = self.azure.update()
-
         _, depth = capture.get_depth_image()
-        if self.segmentation_method == 'apriltags':
-            _, color_image = capture.get_transformed_color_image()
-        else:
-            color_image = None
-
-        return self.segment_depth(depth, color_image)
-
-    def segment_depth(self, depth, color_img=None):
-
         depth = depth[self.crop_size[0][0]: self.crop_size[0][1], self.crop_size[1][0]: self.crop_size[1][1]]
 
-        if self.publish_depth:
+        if self.publish_raw_depth:
             img_msg: Image = self.br.cv2_to_imgmsg((depth).astype(np.uint16))
             img_msg.header.stamp = self.get_clock().now().to_msg()
-            self.raw_depth.publish(img_msg)
+            self.raw_depth_pub.publish(img_msg)
 
         depth *= depth < self.depth_threshold
         depth = depth * self.static_mask
         depth *= depth < self.depth_matrix
         depth = cv2.resize(depth, dsize=self.resolution)
 
-        if self.segmentation_method == 'apriltags':
-            gray_img = self.apriltag_segmentor.GrayConversion(color_img)
-            apriltag_mask, status = self.apriltag_segmentor.segment(gray_image=gray_img, pixel_offset=17)
-            if status:
-                depth *= apriltag_mask
-        elif self.segmentation_method == 'skeletal tracker':
-            depth *= self.segment_with_skeleton_tracker()
-        elif self.segmentation_method == 'NN':
-            tensor_depth = torch.from_numpy(depth.reshape(1, 1, self.resolution[0], self.resolution[1])).float().to(
-                self.device) / 1000
-            with torch.no_grad():
-                mask_0 = self.nn_segmentor(tensor_depth).squeeze().detach().to('cpu').numpy()
-                mask = torch.round(self.nn_segmentor(tensor_depth).squeeze()).detach().to('cpu').numpy()
-                depth *= mask
+        tensor_depth = torch.from_numpy(depth.reshape(1, 1, self.resolution[0], self.resolution[1])).float().to(
+            self.device) / 1000
+
+        mask = self.nn_segmentor(tensor_depth).squeeze().detach().to('cpu').numpy() > self.segmentation_threshold
+        depth *= mask
 
         if self.publish_depth:
-            img_msg: Image = self.br.cv2_to_imgmsg((depth * 100).astype(np.uint16))
+            img_msg: Image = self.br.cv2_to_imgmsg((depth * 1000).astype(np.uint16))
             img_msg.header.stamp = self.get_clock().now().to_msg()
             self.segmented_depth_pub.publish(img_msg)
 
         return depth
 
-    def segment_with_skeleton_tracker(self):
-        depth_mask = np.ones(self.depth_resolution)
-
-        body_frame = self.bodyTracker.update()
-        _, human_depth_image = body_frame.get_body_index_map_image()
-
-        if body_frame.get_num_bodies() == 0:
-            self.logger.warning('No body found')
-        elif body_frame.get_num_bodies() > 1:
-            self.logger.warning('More than 1 body found')
-        else:
-
-            body2d = body_frame.get_body2d()
-            left_hand2d = [body2d.joints[8].position.x, body2d.joints[8].position.y]
-            right_hand2d = [body2d.joints[15].position.x, body2d.joints[15].position.y]
-
-            a = (right_hand2d[1] - left_hand2d[1]) / (right_hand2d[0] - left_hand2d[0])
-            b = right_hand2d[1] - a * right_hand2d[0]
-            line = lambda x: a * x + b
-
-            for i in range(depth_mask.shape[1]):
-                depth_mask[:int(line(i)), i] = 0
-
-            if self.publish_hands_pos:
-                self.compute_and_publish_hand_pos(body_frame)
-
-        return depth_mask
-
-    def compute_and_publish_hand_pos(self, body_frame):
-
-        if body_frame.get_num_bodies() == 0:
-            self.logger.warning('No body found')
-            return None, False
-        elif body_frame.get_num_bodies() > 1:
-            self.logger.warning('More than 1 body found')
-            return None, False
-        else:
-            body_handle = k4abt_body_t()
-            body_handle.skeleton = body_frame.get_body_skeleton(0)
-            body = Body(body_handle)
-
-            left_hand_v = np.array([body.joints[8].position.x / 1000,
-                                    body.joints[8].position.y / 1000,
-                                    body.joints[8].position.z / 1000,
-                                    1]).reshape((4, 1))
-            right_hand_v = np.array([body.joints[15].position.x / 1000,
-                                     body.joints[15].position.y / 1000,
-                                     body.joints[15].position.z / 1000,
-                                     1]).reshape((4, 1))
-
-            T_left_hand = self.T_EndEffector_DepthLink @ left_hand_v
-            T_right_hand = self.T_EndEffector_DepthLink @ right_hand_v
-
-            x_axis = T_right_hand[:3, 0] - T_left_hand[:3, 0]
-            x_axis /= np.linalg.norm(x_axis)
-
-            z_axis = np.array([0, 0, -1])
-            y_axis = np.cross(z_axis, x_axis)
-
-            T_CenterGrasp = np.eye(4)
-            T_CenterGrasp[:3, 3] = (T_left_hand[:3, 0] + T_right_hand[:3, 0]) / 2
-            # T_CenterGrasp[:3, :3] = Rot_EndEffector_start
-            T_CenterGrasp[:3, :3] = np.stack([x_axis, y_axis, z_axis], axis=1)
-
-            left_hand_tf = TransformStamped()
-            left_hand_tf.header.stamp = self.get_clock().now().to_msg()
-            left_hand_tf.header.frame_id = 'tcp'
-            left_hand_tf.child_frame_id = 'left_hand'
-            left_hand_tf.transform.translation.x = T_left_hand[0, 0]
-            left_hand_tf.transform.translation.y = T_left_hand[1, 0]
-            left_hand_tf.transform.translation.z = T_left_hand[2, 0]
-            left_hand_tf.transform.rotation.x = 0.0
-            left_hand_tf.transform.rotation.y = 0.0
-            left_hand_tf.transform.rotation.z = 0.0
-            left_hand_tf.transform.rotation.w = 1.0
-
-            self.tf_pub.sendTransform(left_hand_tf)
-
-            self.logger.info('left hand')
-
-            right_hand_tf = TransformStamped()
-            right_hand_tf.header.stamp = self.get_clock().now().to_msg()
-            right_hand_tf.header.frame_id = 'tcp'
-            right_hand_tf.child_frame_id = 'right_hand'
-            right_hand_tf.transform.translation.x = T_right_hand[0, 0]
-            right_hand_tf.transform.translation.y = T_right_hand[1, 0]
-            right_hand_tf.transform.translation.z = T_right_hand[2, 0]
-            right_hand_tf.transform.rotation.x = 0.0
-            right_hand_tf.transform.rotation.y = 0.0
-            right_hand_tf.transform.rotation.z = 0.0
-            right_hand_tf.transform.rotation.w = 1.0
-            self.tf_pub.sendTransform(right_hand_tf)
-
-            self.logger.info('right hand')
-
-            center_grasp_tf = TransformStamped()
-            center_grasp_tf.header.stamp = self.get_clock().now().to_msg()
-            center_grasp_tf.header.frame_id = 'tcp'
-            center_grasp_tf.child_frame_id = 'center_grasp'
-            center_grasp_tf.transform.translation.x = T_CenterGrasp[0, 3]
-            center_grasp_tf.transform.translation.y = T_CenterGrasp[1, 3]
-            center_grasp_tf.transform.translation.z = T_CenterGrasp[2, 3]
-            center_grasp_tf.transform.rotation.x = 0.0
-            center_grasp_tf.transform.rotation.y = 0.0
-            center_grasp_tf.transform.rotation.z = 0.0
-            center_grasp_tf.transform.rotation.w = 1.0
-            self.tf_pub.sendTransform(center_grasp_tf)
-
-            deformation = np.array([T_CenterGrasp[0, 3], T_CenterGrasp[1, 3], T_CenterGrasp[2, 3],
-                                    np.arctan2(T_right_hand[1] - T_left_hand[1], T_right_hand[0] - T_left_hand[0])[0]])
-
-        return deformation, True
-
+    @torch.no_grad()
     def estimate_deformation(self):
 
-        if self.estimate_from_ply:
+        if self.rest_ply_shape_features is not None:
             segmented_depth = self.get_segmented_depth()
 
             if np.sum(segmented_depth) > 0:
+                depth = torch.from_numpy(segmented_depth.reshape(input_shape)).float().to(self.device) / 1000
+                prob_deformation: np.array = self.deformation_estimator.fast_predict_classification(self.rest_ply_shape_features,
+                                                                                                    depth).squeeze().cpu().detach().numpy()
+                if self.publish_probabilities:
+                    dim1 = MultiArrayDimension()
+                    dim1.label = "dofs"
+                    dim1.size = 4  # Number of rows
+                    dim1.stride = 5  # Total number of elements in each row (this will be the number of columns)
 
-                depth = torch.from_numpy(segmented_depth.reshape(input_shape)).float().to('cuda') / 1000
-                with torch.no_grad():
-                    deformation_estimation = self.deformation_estimator(depth).squeeze().cpu().detach().numpy()
-                deformation_estimation = deformation_estimation * self.half_range_def + self.mid_def
-            else:
-                deformation_estimation = np.zeros(4)
+                    dim2 = MultiArrayDimension()
+                    dim2.label = "classes"
+                    dim2.size = 5  # Number of columns
+                    dim2.stride = 1  # There are 5 columns in total
 
-        else:
-            _ = self.azure.update()
-            body_frame = self.bodyTracker.update()
-            _, human_depth_image = body_frame.get_body_index_map_image()
+                    # Set the layout of the message
+                    msg = Float32MultiArray()
+                    msg.layout.dim = [dim1, dim2]
+                    msg.data = prob_deformation.ravel().tolist()
+                    self.prob_def_pub.publish(msg)
 
-            self.logger.info('body_frame')
+                if self.publish_classes:
+                    deformation_classes = np.argmax(prob_deformation, axis=-1)
+                    msg = Int32MultiArray()
+                    msg.data = deformation_classes.tolist()
+                    self.classes_def_pub.publish(msg)
 
-            deformation, status = self.compute_and_publish_hand_pos(body_frame=body_frame)
-            
-            if status:
-                self.deformation_buffer.append(deformation)
-                if len(self.deformation_buffer) > 3:
-                    self.deformation_buffer.pop(0)
-                    deformation = np.mean(self.deformation_buffer)
-                else:
-                    deformation = np.zeros(4)
-                deformation_estimation = deformation
-            else:
-                deformation_estimation = np.zeros(4)
-
-        self.deformation_msg.header.stamp = self.get_clock().now().to_msg()
-
-        if self.dofs == 3:
-            self.deformation_msg.wrench.force.x = deformation_estimation[0]
-            self.deformation_msg.wrench.force.y = deformation_estimation[1]
-            self.deformation_msg.wrench.force.z = deformation_estimation[2]
-        elif self.dofs == 4:
-            self.deformation_msg.wrench.force.x = deformation_estimation[0]
-            self.deformation_msg.wrench.force.y = deformation_estimation[1]
-            self.deformation_msg.wrench.force.z = deformation_estimation[2]
-            self.deformation_msg.wrench.torque.z = deformation_estimation[3]
-        elif self.dofs == 5:
-            self.deformation_msg.wrench.force.x = deformation_estimation[0]
-            self.deformation_msg.wrench.force.y = deformation_estimation[1]
-            self.deformation_msg.wrench.force.z = deformation_estimation[2]
-            self.deformation_msg.wrench.torque.y = deformation_estimation[3]
-            self.deformation_msg.wrench.torque.z = deformation_estimation[4]
-        else:
-            print('Unsupported number of deformation degreeS of freedom')
-            exit()
-
-        self.deformation_publisher.publish(self.deformation_msg)
-
-        if all(deformation_estimation != np.zeros(4)):
-            delta_def = deformation_estimation - self.deformation_setpoint
-            #delta_def *= np.abs(delta_def) > self.dead_band
-            for i in range(4):
-                if delta_def[i] > self.dead_band[i]:
-                    delta_def[i] -= self.dead_band[i]
-                elif delta_def[i] < -self.dead_band[i]:
-                    delta_def[i] += self.dead_band[i]
-                else:
-                    delta_def[i] = 0
-
-            twist = delta_def * self.gains
-            self.twist_msg.linear.x = twist[0]
-            self.twist_msg.linear.y = twist[1]
-            self.twist_msg.linear.z = twist[2]
-            self.twist_msg.angular.z = twist[3]
-        else:
-            self.twist_msg.linear.x = 0.0
-            self.twist_msg.linear.y = 0.0
-            self.twist_msg.linear.z = 0.0
-            self.twist_msg.angular.z = 0.0
-
-        self.twist_publisher.publish(self.twist_msg)
-
-
+    def get_rest_ply_shape(self, request, response: Trigger.Response):
+        self.rest_ply_shape[0,0] = torch.from_numpy(self.get_segmented_depth()).float().to(self.device)
+        self.rest_ply_shape_features = self.deformation_estimator.extract_features(self.rest_ply_shape)
+        response.success = True
+        return response
 
 
 def main():
@@ -425,9 +213,16 @@ def main():
     # executor = rclpy.executors.MultiThreadedExecutor()
     # executor.add_node(node)
     # executor.spin()
-
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
