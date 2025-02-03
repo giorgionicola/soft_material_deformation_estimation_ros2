@@ -3,6 +3,7 @@ from rclpy.node import Node
 from cv_bridge import CvBridge
 import pykinect_azure as pykinect
 from sensor_msgs.msg import Image, CameraInfo
+from sentry_sdk.profiler import frame_id
 
 
 class Azure(Node):
@@ -18,17 +19,49 @@ class Azure(Node):
 
         self.azure = pykinect.start_device(config=device_config)
         self.calibration = self.azure.get_calibration(device_config.depth_mode, device_config.color_resolution)
-
-        info = CameraInfo()
+        self.color_calib = self.calibration.color_camera
 
         self.br = CvBridge()
-        self.img_publisher = self.create_publisher(topic='/rgb_img', msg_type=Image, qos_profile=10)
+        self.img_publisher = self.create_publisher(topic='rgb_img', msg_type=Image, qos_profile=10)
+        self.info_publisher = self.create_publisher(topic='camera_info', msg_type=CameraInfo, qos_profile=10)
 
-    def pub_image(self):
+        self.camera_info_msg = CameraInfo(frame_id='camera_color_optical_frame',
+                                          width=self.color_calib.resolution_width,
+                                          height=self.color_calib.resolution_height,
+                                          K=[self.color_calib.fx, 0.0, self.color_calib.cx,
+                                             0.0, self.color_calib.fy, self.color_calib.cy,
+                                             0.0, 0.0, 1.0],
+                                          D=list(self.color_calib.distortion_coefficients),
+                                          distortion_model='plumb_bob',
+                                          R=[1.0, 0.0, 0.0,
+                                             0.0, 1.0, 0.0,
+                                             0.0, 0.0, 1.0],
+                                          P=[self.color_calib.fx, 0.0, self.color_calib.cx, 0.0,
+                                             0.0, self.color_calib.fy, self.color_calib.cy, 0.0,
+                                             0.0, 0.0, 1.0, 0.0]
+                                          )
+
+        self.create_timer(timer_period_sec=1 / 30, callback=self.pub_rgb_image)
+        self.create_timer(timer_period_sec=1, callback=self.publish_camera_info)
+
+    def pub_rgb_image(self):
         capture = self.azure.update()
         _, rgb = capture.get_color_image()
+
         if rgb is not None:
             img_msg: Image = self.br.cv2_to_imgmsg(rgb)
+            img_msg.header.stamp = self.get_clock().now().to_msg()
+            self.img_publisher.publish(img_msg)
+
+    def publish_camera_info(self):
+        self.camera_info_msg.header.stamp = self.get_clock().now().to_msg()
+        self.info_publisher.publish(self.camera_info_msg)
+
+    def pub_depth_image(self):
+        capture = self.azure.update()
+        _, depth = capture.get_depth_image()
+        if depth is not None:
+            img_msg: Image = self.br.cv2_to_imgmsg(depth)
             img_msg.header.stamp = self.get_clock().now().to_msg()
             self.img_publisher.publish(img_msg)
 
@@ -36,8 +69,6 @@ class Azure(Node):
 def main():
     rclpy.init()
     node = Azure()
-    # node.create_timer(timer_period_sec=1 / 30, callback=node.estimate_deformation)
-    node.create_timer(timer_period_sec=1 / 30, callback=node.pub_image)
 
     rclpy.spin(node)
 

@@ -30,7 +30,7 @@ class DeformationToTwistNode(Node):
                                                      qos_profile=10)
 
         # Publisher for the Twist topic
-        self.twist_publisher = self.create_publisher(topic='/imm/commands',
+        self.twist_publisher = self.create_publisher(topic='/azrael/imm_controller/commands',
                                                      msg_type=Twist,
                                                      qos_profile=10)
 

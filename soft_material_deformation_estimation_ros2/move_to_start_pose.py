@@ -197,7 +197,7 @@ class MoveToStartNode(Node):
         rot_ee_to_chand = R.from_matrix(ee_to_chand[:3, :3]).as_euler(seq='xyz', degrees=True)
 
         print(f'Grasp Position: \n{center_hand}')
-        print(f'End effectrot to Grasp Position: \n'
+        print(f'End effector to Grasp Position: \n'
               f'\tTraslation {ee_to_chand[:3, 3]}\n'
               f'\tRotation Euler xyz: {rot_ee_to_chand}')
 

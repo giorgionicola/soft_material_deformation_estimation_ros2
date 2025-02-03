@@ -55,7 +55,7 @@ class DeformationNode(Node):
         self.publish_probabilities = True
         self.publish_raw_depth = True
         self.publish_rest_ply_shape = True
-        self.publish_depth = True
+        self.publish_segmented_depth = True
 
         self.logger = self.get_logger()
 
@@ -95,7 +95,7 @@ class DeformationNode(Node):
                             self.crop_size[1][0]: self.crop_size[1][1]]
 
         # self.calibration = self.azure.get_calibration(device_config.depth_mode, device_config.color_resolution)
-        if self.publish_depth:
+        if self.publish_segmented_depth:
             self.br = CvBridge()
             self.segmented_depth_pub = self.create_publisher(topic='/segmented_depth',
                                                              msg_type=Image,
@@ -157,7 +157,7 @@ class DeformationNode(Node):
         mask = self.nn_segmentor(tensor_depth).squeeze().detach().to('cpu').numpy() > self.segmentation_threshold
         depth *= mask
 
-        if self.publish_depth:
+        if self.publish_segmented_depth:
             img_msg: Image = self.br.cv2_to_imgmsg((depth * 1000).astype(np.uint16))
             img_msg.header.stamp = self.get_clock().now().to_msg()
             self.segmented_depth_pub.publish(img_msg)

@@ -21,7 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'deformation_estimation=soft_material_deformation_estimation_ros2.deformation_estimation:main',
-            'deformation_estimation=soft_material_deformation_estimation_ros2.twist_generator:main',
+            'twist_generator=soft_material_deformation_estimation_ros2.twist_generator:main',
             'move_to_start_pose=soft_material_deformation_estimation_ros2.move_to_start_pose:main',
             'move_to_test_poses=soft_material_deformation_estimation_ros2.move_to_test_poses:main',
             'compare_methods=soft_material_deformation_estimation_ros2.compare_methods:main'
