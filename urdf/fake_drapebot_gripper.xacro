@@ -1,0 +1,116 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="fake_drapebot_gripper">
+  <xacro:include filename="$(find azure_kinect_ros_driver)/urdf/azure_kinect.urdf.xacro"/>
+
+  <link name="interface_with_robot"/>
+
+  <link name="link1">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.265 0.03 0.03" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.265 0.03 0.03" />
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint1" type="fixed">
+    <origin xyz="0.172 0 -0.030" rpy="0 0 0" />
+    <parent link="interface_with_robot"/>
+    <child link="link1"/>
+  </joint>
+
+  <link name="link2">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.03 0.03 0.5172" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.03 0.03 0.5172" />
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint2" type="fixed">
+    <origin xyz="0.1475 0 0.2736" rpy="0 0 0" />
+    <parent link="link1"/>
+    <child link="link2"/>
+  </joint>
+
+  <link name="link3">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.03 0.03 0.200" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.03 0.03 0.200" />
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint3" type="fixed">
+    <origin xyz="-0.1175 0 -0.115" rpy="0 0 0" />
+    <parent link="link1"/>
+    <child link="link3"/>
+  </joint>
+
+  <link name="link4">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.03 0.80 0.03" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.03 0.80 0.03" />
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint7" type="fixed">
+    <origin xyz="0.03 0 -0.085" rpy="0 0 0" />
+    <parent link="link3"/>
+    <child link="link4"/>
+  </joint>
+
+  <link name="interfaccia_camera"/>
+
+  <joint name="joint4" type="fixed">
+    <origin xyz="0 0 0.2561" rpy="0 0 0" />
+    <parent link="link2"/>
+    <child link="interfaccia_camera"/>
+  </joint>
+
+  <joint name="joint5" type="fixed">
+    <origin xyz="0.09 0 -0.04 " rpy="0 0.7853982 0" />
+    <parent link="interfaccia_camera"/>
+    <child link="camera_base"/>
+  </joint>
+
+
+
+  <link name='end_effector'/>
+
+  <joint name="joint6" type="fixed">
+    <origin xyz="-0.220 0 -0.7472 " rpy="3.141593 0 1.570796" />
+    <parent link="interfaccia_camera"/>
+    <child link="end_effector"/>
+  </joint>
+
+
+</robot>

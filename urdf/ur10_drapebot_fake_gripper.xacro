@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="ur10_fake_gripper">
+
+  <xacro:include filename="$(find soft_material_deformation_estimation_ros2)/urdf/fake_drapebot_gripper.xacro"/>
+  <xacro:include filename="$(find azrael_description)/urdf/system.urdf.xacro"/>
+
+  <joint name="tool0_to_fake_gripper" type="fixed">
+    <origin xyz="-0.0 0 0" rpy="-3.141593 0 0 " />
+    <parent link="azrael/tool0"/>
+    <child link="interface_with_robot"/>
+  </joint>
+
+</robot>
