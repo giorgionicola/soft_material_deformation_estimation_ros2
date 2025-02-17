@@ -1,0 +1,95 @@
+
+controller_manager:
+  ros__parameters:
+    update_rate: 125  # Hz
+
+    joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    imm_controller:
+      type: imm_controller/ImmController
+
+    cartesian_motion_controller:
+      type: cartesian_motion_controller/CartesianMotionController
+
+joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - azrael/shoulder_pan_joint
+      - azrael/shoulder_lift_joint
+      - azrael/elbow_joint
+      - azrael/wrist_1_joint
+      - azrael/wrist_2_joint
+      - azrael/wrist_3_joint
+
+    command_interfaces:
+      - position
+
+    state_interfaces:
+      - position
+      - velocity
+
+# https://github.com/muttistefano/imm_controller.git
+imm_controller:
+  ros__parameters:
+    joints:
+      - azrael/shoulder_pan_joint
+      - azrael/shoulder_lift_joint
+      - azrael/elbow_joint
+      - azrael/wrist_1_joint
+      - azrael/wrist_2_joint
+      - azrael/wrist_3_joint
+    command_joints:
+      - azrael/shoulder_pan_joint
+      - azrael/shoulder_lift_joint
+      - azrael/elbow_joint
+      - azrael/wrist_1_joint
+      - azrael/wrist_2_joint
+      - azrael/wrist_3_joint
+
+    state_interface:
+      - position
+      - velocity
+    control_interface:
+      - position
+    interface_name: position
+    robot_chain_root: azrael/base_link
+    robot_chain_tip: azrael/tool0
+    amr_base_link: azrael/base_footprint
+    cmd_vel_topic: /azrael/cmd_vel
+    only_robot: false
+    omni: true
+
+# https://github.com/fzi-forschungszentrum-informatik/cartesian_controllers
+cartesian_motion_controller:
+  ros__parameters:
+    end_effector_link: "azrael/tool0"
+    robot_base_link: "azrael/base_link"
+    joints:
+      - azrael/shoulder_pan_joint
+      - azrael/shoulder_lift_joint
+      - azrael/elbow_joint
+      - azrael/wrist_1_joint
+      - azrael/wrist_2_joint
+      - azrael/wrist_3_joint
+
+    # See the cartesian_compliance_controller
+    command_interfaces:
+      - position
+        #- velocity
+
+    solver:
+        error_scale: 1.0
+        iterations: 10
+        publish_state_feedback: True
+
+    pd_gains:
+        trans_x: {p: 3.0}
+        trans_y: {p: 3.0}
+        trans_z: {p: 3.0}
+        rot_x: {p: 0.5}
+        rot_y: {p: 0.5}
+        rot_z: {p: 0.5}

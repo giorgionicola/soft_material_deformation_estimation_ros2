@@ -19,25 +19,27 @@ class Azure(Node):
 
         self.azure = pykinect.start_device(config=device_config)
         self.calibration = self.azure.get_calibration(device_config.depth_mode, device_config.color_resolution)
-        self.color_calib = self.calibration.color_camera
+        self.color_calib = self.calibration.color_params
 
         self.br = CvBridge()
         self.img_publisher = self.create_publisher(topic='rgb_img', msg_type=Image, qos_profile=10)
         self.info_publisher = self.create_publisher(topic='camera_info', msg_type=CameraInfo, qos_profile=10)
 
         self.camera_info_msg = CameraInfo(frame_id='camera_color_optical_frame',
-                                          width=self.color_calib.resolution_width,
-                                          height=self.color_calib.resolution_height,
-                                          K=[self.color_calib.fx, 0.0, self.color_calib.cx,
-                                             0.0, self.color_calib.fy, self.color_calib.cy,
+                                          width=1920,
+                                          height=1080,
+                                          K=[919.24267578125, 0.0, 957.8638305664062,
+                                             0.0, 919.4411010742188, 552.330810546875,
                                              0.0, 0.0, 1.0],
-                                          D=list(self.color_calib.distortion_coefficients),
-                                          distortion_model='plumb_bob',
+                                          D=[0.509122371673584, -2.7297146320343018, 0.0004077378544025123,
+                                             -0.0001945431431522593, 1.5738297700881958, 0.38606059551239014,
+                                             -2.545588731765747, 1.4968762397766113],
+                                          distortion_model='rational_polynomial',
                                           R=[1.0, 0.0, 0.0,
                                              0.0, 1.0, 0.0,
                                              0.0, 0.0, 1.0],
-                                          P=[self.color_calib.fx, 0.0, self.color_calib.cx, 0.0,
-                                             0.0, self.color_calib.fy, self.color_calib.cy, 0.0,
+                                          P=[919.24267578125, 0.0, 957.8638305664062, 0.0,
+                                             0.0, 919.4411010742188, 552.330810546875, 0.0,
                                              0.0, 0.0, 1.0, 0.0]
                                           )
 

@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://wiki.ros.org/xacro" name="fake_drapebot_gripper">
-  <xacro:include filename="$(find azure_kinect_ros_driver)/urdf/azure_kinect.urdf.xacro"/>
+  <xacro:include filename="$(find soft_material_deformation_estimation_ros2)/urdf/azure_kinect.urdf.xacro"/>
 
   <link name="interface_with_robot"/>
 

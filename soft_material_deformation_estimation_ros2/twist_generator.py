@@ -12,16 +12,18 @@ class DeformationToTwistNode(Node):
     def __init__(self):
         super().__init__('twist_publisher')
 
-        self.window_size = 5
-        self.dofs = 4
+        self.window_size = 4
+        self.dofs = 5
         self.n_classes = 5
-        self.twist_conv = np.array([[-0.2, -0.05, 0, 0.05, 0.2],
-                                    [-0.2, -0.05, 0, 0.05, 0.2],
-                                    [-0.2, -0.05, 0, 0.05, 0.2],
-                                    [-0.2, -0.05, 0, 0.05, 0.2]])
-        self.dead_band = np.array([0.02, 0.02, 0.02, 0.02])
+        self.twist_conv = np.array([[0.25, 0.08, 0, -0.08, -0.25],
+                                    [0.25, 0.075, 0, -0.075, -0.25],
+                                    [-0.15, -0.05, 0, 0.05, 0.15],
+                                    [0.15, 0.05, 0, -0.05, -0.15],
+                                    [-0.25, -0.08, 0, 0.08, 0.25]])
 
-        self.prob_deformation = np.zeros((self.dofs, self.n_classes ))
+        self.dead_band = np.array([0.03, 0.03, 0.03, 0.03, 0.03])
+
+        self.prob_deformation = np.zeros((self.dofs, self.n_classes))
 
         # Subscriber to the Float32MultiArray topic
         self.def_listener = self.create_subscription(msg_type=Float32MultiArray,
@@ -30,7 +32,8 @@ class DeformationToTwistNode(Node):
                                                      qos_profile=10)
 
         # Publisher for the Twist topic
-        self.twist_publisher = self.create_publisher(topic='/azrael/imm_controller/commands',
+        self.twist_publisher = self.create_publisher(topic='/imm_controller/commands',
+                                                     #           topic='/cmd_vel',
                                                      msg_type=Twist,
                                                      qos_profile=10)
 
@@ -90,15 +93,25 @@ class DeformationToTwistNode(Node):
                 self.last_log_time = current_time
         else:
 
-            twist = np.array([sum(t_buffer)/self.window_size for t_buffer in self.twist_buffer])
-            twist *= (np.abs(twist) > self.dead_band)
+            twist = np.array([sum(t_buffer) / self.window_size for t_buffer in self.twist_buffer])
+            for i in range(self.dofs):
+                if np.abs(twist[i]) < self.dead_band[i]:
+                    twist[i] = 0
+                else:
+                    twist[i] -= np.sign(twist[i]) * self.dead_band[i]
 
             twist_msg.linear.x = twist[0]
             twist_msg.linear.y = twist[1]
             twist_msg.linear.z = twist[2]
             twist_msg.angular.x = 0.0
+            #            twist_msg.angular.y = twist[3]
+            twist_msg.angular.z = twist[4]
+            # twist_msg.linear.x = 0.0
+            # twist_msg.linear.y = 0.0
+            # twist_msg.linear.z = 0.0
+            # twist_msg.angular.x = 0.0
             twist_msg.angular.y = 0.0
-            twist_msg.angular.z = twist[3]
+        #            twist_msg.angular.z = 0.0
 
         # Publish the Twist command
         self.twist_publisher.publish(twist_msg)
@@ -110,7 +123,6 @@ def main(args=None):
     node = DeformationToTwistNode()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
-
 
     try:
         executor.spin()

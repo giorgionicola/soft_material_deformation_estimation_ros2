@@ -1,5 +1,4 @@
 import time
-
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -8,13 +7,6 @@ import tf2_ros
 from tf2_ros.buffer import Buffer
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from scipy.spatial.transform import Rotation as R
-from threading import Thread, Event
-from rclpy.executors import MultiThreadedExecutor
-
-"""
-tag30 left hand
-tag20 right hand
-"""
 
 
 class MoveToStartNode(Node):
@@ -25,7 +17,7 @@ class MoveToStartNode(Node):
         self.first_time = True
         self.logger = self.get_logger()
 
-        self.start_distance = 0.75
+        self.start_distance = 0.85
         self.half_fake_hand_size = 0.17
 
         # self.tf_pub = tf2_ros.TransformBroadcaster(self)
@@ -43,19 +35,16 @@ class MoveToStartNode(Node):
         self.tag10_pose = np.eye(4)
         self.tag20_pose = np.eye(4)
 
-        self.get_tag_pose_timer = self.create_timer(timer_period_sec=0.2, callback=self.get_tag_pose)
-        self.estimate_start_pose_timer = self.create_timer(timer_period_sec=0.2, callback=self.estimate_start_pose)
-
     def get_tag_pose(self):
-        if not self.got_tags:
+        while not self.got_tags:
             if not self.tf_buffer.can_transform(self.base_frame,
                                                 'tag36h11:10',
                                                 # 'camera_base',
-                                                rclpy.time.Time(), Duration(seconds=0.05)):
-                self.logger.warning('Can\'t find tag_10 1')
+                                                rclpy.time.Time(), Duration(seconds=0.1)):
+                self.logger.warning('Can\'t find tag_10')
                 return
             if not self.tf_buffer.can_transform(self.base_frame, 'tag36h11:20', rclpy.time.Time(), Duration(seconds=5)):
-                self.logger.warning('Can\'t find tag_20 1')
+                self.logger.warning('Can\'t find tag_20')
                 return
             # try:
             t = self.tf_buffer.lookup_transform(self.base_frame, 'tag36h11:10', rclpy.time.Time())
@@ -224,7 +213,8 @@ class MoveToStartNode(Node):
             return
 
 
-def main():
+
+if __name__ == '__main__':
     rclpy.init()
     node = MoveToStartNode()
 
@@ -232,17 +222,7 @@ def main():
     # node.create_timer(timer_period_sec=1 / 30, callback=node.estimate_deformation)
     # node.create_timer(timer_period_sec=1 / 30, callback=node.estimate_start_pose)
 
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
+    while rclpy.ok():
+        node.get_tag_pose()
+        node.estimate_start_pose()
 
-    try:
-        executor.spin()
-    except KeyboardInterrupt:
-        node.get_logger().info('Shutting down node.')
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()

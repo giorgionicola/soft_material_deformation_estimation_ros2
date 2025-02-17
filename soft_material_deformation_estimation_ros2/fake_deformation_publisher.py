@@ -46,13 +46,14 @@ class FakeDeformationEstimator(Node):
 
             prob_deformation = np.array([normalized.tolist(),
                                          normalized.tolist(),
+					 normalized.tolist(),
                                          normalized.tolist(),
                                          normalized.tolist()])
 
             if self.publish_probabilities:
                 dim1 = MultiArrayDimension()
                 dim1.label = "dofs"
-                dim1.size = 4  # Number of rows
+                dim1.size = 5  # Number of rows
                 dim1.stride = 5  # Total number of elements in each row (this will be the number of columns)
 
                 dim2 = MultiArrayDimension()

@@ -28,6 +28,7 @@ class SiameseMultiHeadNetwork(nn.Module):
         elif self.model_type == ModelType.regression:
             self.forward = self.forward_regression
 
+    @torch.no_grad()
     def extract_features(self, x):
         x = self.features_extractor(x)
         return x
